@@ -1,13 +1,21 @@
 import cv2
-from flask import Flask, render_template, Response
+from flask import Flask, Response
 import numpy as np
 import tensorflow as tf
 import mediapipe as mp
 import threading
+from collections import deque
+import os
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # Set CUDA_VISIBLE_DEVICES to -1 to disable GPU
 app = Flask(__name__)
 
-cap = cv2.VideoCapture(0)
+camera_index = 0  # Adjust this value if needed
+
+cap = cv2.VideoCapture(camera_index)
+
+if not cap.isOpened():
+    raise ValueError(f"Could not open camera with index {camera_index}")
 
 frame_width = 640  # Set the desired frame width
 frame_height = 480  # Set the desired frame height
@@ -34,7 +42,23 @@ label_mapping = {
     18: 'S', 19: 'T', 20: 'U', 21: 'V', 22: 'W', 23: 'X', 24: 'Y'
 }
 
+frame_rate = cap.get(cv2.CAP_PROP_FPS)
+buffer_duration = 10  # 10 seconds
+buffer_size = int(frame_rate * buffer_duration)
+character_buffer = deque(maxlen=buffer_size)
+last_prediction = None
+
+def compile_words(buffer):
+    # Logic for identifying word boundaries and compiling characters into words
+    word = ''.join(buffer)  # Concatenate all characters in the buffer
+    return word
+
+def reset_buffer():
+    character_buffer.clear()
+
 def generate_frames():
+    global last_prediction  # Add global declaration for last_prediction
+
     while True:
         success, frame = cap.read()
 
@@ -49,6 +73,8 @@ def generate_frames():
 
         try:
             if hand_landmarks:
+                reset_buffer_flag = False  # Flag to indicate if buffer needs to be reset
+
                 handLMs = hand_landmarks[0]  # Get the first hand landmark only
 
                 h, w, c = frame.shape
@@ -79,24 +105,36 @@ def generate_frames():
                 roi = frame[y_min:y_max, x_min:x_max]
 
                 if roi.size == 0:
-                    continue
+                    reset_buffer_flag = True  # Hand is out of frame, reset the buffer
+                else:
+                    reset_buffer_flag = False
 
-                roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-                roi_resized = cv2.resize(roi_gray, (64, 64))
-                roi_normalized = roi_resized / 255.0
-                roi_final = np.expand_dims(roi_normalized, axis=-1)
-                input_data = np.expand_dims(roi_final, axis=0).astype(np.float32)
+                    roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+                    roi_resized = cv2.resize(roi_gray, (64, 64))
+                    roi_normalized = roi_resized / 255.0
+                    roi_final = np.expand_dims(roi_normalized, axis=-1)
+                    input_data = np.expand_dims(roi_final, axis=0).astype(np.float32)
 
-                with frame_lock:
-                    interpreter.set_tensor(input_details[0]['index'], input_data)
-                    interpreter.invoke()
-                    output_data = interpreter.get_tensor(output_details[0]['index'])
+                    with frame_lock:
+                        interpreter.set_tensor(input_details[0]['index'], input_data)
+                        interpreter.invoke()
+                        output_data = interpreter.get_tensor(output_details[0]['index'])
 
-                pred_index = np.argmax(output_data)
-                pred_label = label_mapping.get(pred_index, "Unknown")
+                    pred_index = np.argmax(output_data)
+                    pred_label = label_mapping.get(pred_index, "Unknown")
 
-                label_text = f"{pred_label}"
-                cv2.putText(frame, label_text, (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    if pred_label != last_prediction:
+                        character_buffer.append(pred_label)  # Add predicted character to buffer
+                        last_prediction = pred_label
+
+                    compiled_word = compile_words(character_buffer)  # Compile characters into word
+
+                    label_text = f"Character: {pred_label}"
+                    cv2.putText(frame, label_text, (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+                if reset_buffer_flag:
+                    reset_buffer()  # Reset the buffer if hand is out of frame
+                    last_prediction = None  # Reset the last prediction
 
         except Exception as e:
             print(f"Error: {str(e)}")
@@ -108,9 +146,14 @@ def generate_frames():
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
 
+@app.route('/')
+def index():
+    return "Live Video Feed API is running!"
+
 @app.route('/video_feed')
 def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    from waitress import serve
+    serve(app, host="0.0.0.0", port=8080)
