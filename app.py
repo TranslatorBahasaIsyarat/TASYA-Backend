@@ -106,6 +106,10 @@ def process_frame(frame):
                 label_text = f"Character: {pred_label}"
                 cv2.putText(frame, label_text, (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
+                # Logging predictions and character buffer
+                print(f"Predicted Character: {pred_label}")
+                print(f"Character Buffer: {character_buffer}")
+
             if reset_buffer_flag:
                 character_buffer.clear()  # Reset the buffer if hand is out of frame
                 last_prediction = None  # Reset the last prediction
@@ -140,8 +144,23 @@ def index():
 
 @app.route('/video_feed', methods=['POST'])
 def video_feed():
-    stream = request.stream
-    return Response(process_stream(stream), mimetype='multipart/x-mixed-replace; boundary=frame')
+    frame_data = request.files['frame'].read()  # Read the frame data from the request payload
+    frame_data = np.frombuffer(frame_data, np.uint8)  # Convert the frame data to a NumPy array
+
+    frame = cv2.imdecode(frame_data, cv2.IMREAD_COLOR)  # Decode the frame
+
+    processed_frame = process_frame(frame)  # Process the frame
+
+    ret, buffer = cv2.imencode('.jpg', processed_frame)  # Encode the processed frame as JPEG
+
+    frame_bytes = buffer.tobytes()  # Convert the frame to bytes
+
+    return Response(
+        b'--frame\r\n'
+        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n',
+        mimetype='multipart/x-mixed-replace; boundary=frame'
+    )
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', debug=True)
