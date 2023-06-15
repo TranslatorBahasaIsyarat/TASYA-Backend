@@ -1,14 +1,15 @@
+import base64
+import threading
 import cv2
-from flask import Flask, Response, request
 import numpy as np
 import tensorflow as tf
 import mediapipe as mp
-import threading
-from collections import deque
-import base64
-import io
+from flask import Flask
+from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'secret_key'
+socketio = SocketIO(app)
 
 frame_lock = threading.Lock()
 
@@ -22,23 +23,17 @@ hands = mphands.Hands(max_num_hands=1)
 mp_drawing = mp.solutions.drawing_utils
 
 label_mapping = {
-    0: 'A', 1: 'B', 2: 'C', 3: 'D', 4: 'E', 5: 'F', 6: 'G', 7: 'H', 8: 'I',
+    29: 'Other',  # Default label for folders other than 'A' to 'Z', 'del', 'nothing', 'space'
+    0: 'A', 1: 'B', 2: 'C', 3: 'D', 4: 'E', 5: 'F', 6: 'G', 7: 'H', 8: 'I', 9: 'J',
     10: 'K', 11: 'L', 12: 'M', 13: 'N', 14: 'O', 15: 'P', 16: 'Q', 17: 'R',
-    18: 'S', 19: 'T', 20: 'U', 21: 'V', 22: 'W', 23: 'X', 24: 'Y'
+    18: 'S', 19: 'T', 20: 'U', 21: 'V', 22: 'W', 23: 'X', 24: 'Y', 25: 'Z',
+    26: 'del', 27: 'nothing', 28: 'space'
 }
 
-frame_width = 640  # Set the desired frame width
-frame_height = 480  # Set the desired frame height
+def process_frame(frame, frame_width, frame_height):
+    if frame is None or frame.size == 0:
+        return frame
 
-character_buffer = deque(maxlen=10)  # Buffer for characters
-last_prediction = None  # Last predicted character
-
-def compile_words(buffer):
-    # Logic for identifying word boundaries and compiling characters into words
-    word = ''.join(buffer)  # Concatenate all characters in the buffer
-    return word
-
-def process_frame(frame):
     frame = cv2.resize(frame, (frame_width, frame_height))
 
     framergb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -47,8 +42,6 @@ def process_frame(frame):
 
     try:
         if hand_landmarks:
-            reset_buffer_flag = False  # Flag to indicate if buffer needs to be reset
-
             handLMs = hand_landmarks[0]  # Get the first hand landmark only
 
             h, w, c = frame.shape
@@ -78,11 +71,7 @@ def process_frame(frame):
 
             roi = frame[y_min:y_max, x_min:x_max]
 
-            if roi.size == 0:
-                reset_buffer_flag = True  # Hand is out of frame, reset the buffer
-            else:
-                reset_buffer_flag = False
-
+            if roi.size != 0:
                 roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
                 roi_resized = cv2.resize(roi_gray, (64, 64))
                 roi_normalized = roi_resized / 255.0
@@ -97,70 +86,54 @@ def process_frame(frame):
                 pred_index = np.argmax(output_data)
                 pred_label = label_mapping.get(pred_index, "Unknown")
 
-                if pred_label != last_prediction:
-                    character_buffer.append(pred_label)  # Add predicted character to buffer
-                    last_prediction = pred_label
-
-                compiled_word = compile_words(character_buffer)  # Compile characters into word
-
                 label_text = f"Character: {pred_label}"
-                cv2.putText(frame, label_text, (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-                # Logging predictions and character buffer
-                print(f"Predicted Character: {pred_label}")
-                print(f"Character Buffer: {character_buffer}")
-
-            if reset_buffer_flag:
-                character_buffer.clear()  # Reset the buffer if hand is out of frame
-                last_prediction = None  # Reset the last prediction
+                cv2.putText(frame, label_text, (x_min, y_max + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
     except Exception as e:
         print(f"Error: {str(e)}")
 
     return frame
 
-def process_stream(stream):
-    global last_prediction
 
-    while True:
-        frame_bytes = stream.read()
-        if not frame_bytes:
-            break
+@socketio.on('connect')
+def handle_connect():
+    print('Client connected')
 
-        frame_data = np.frombuffer(frame_bytes, dtype=np.uint8)
-        frame = cv2.imdecode(frame_data, cv2.IMREAD_COLOR)
+@socketio.on('disconnect')
+def handle_disconnect():
+    print('Client disconnected')
 
-        processed_frame = process_frame(frame)
+@socketio.on('video_stream')
+def handle_video_stream(data):
+    frame_bytes = data['frame']
+    frame_width = data['width']  # Get the width from the request
+    frame_height = data['height']  # Get the height from the request
+    frame_data = np.frombuffer(base64.b64decode(frame_bytes), dtype=np.uint8)
+    frame = cv2.imdecode(frame_data, cv2.IMREAD_COLOR)
+    
+    # Use the frame_width and frame_height variables as needed in your code
 
+    processed_frame = process_frame(frame, frame_width, frame_height)
+
+    if processed_frame is not None and processed_frame.size > 0:
         ret, buffer = cv2.imencode('.jpg', processed_frame)
-        frame_bytes = buffer.tobytes()
 
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        if ret:
+            frame_bytes = buffer.tobytes()
+            encoded_frame = base64.b64encode(frame_bytes).decode('utf-8')
+
+            emit('processed_frame', {'frame': encoded_frame})
+    else:
+        emit('processed_frame', {'frame': ''})
+
+    # Notify when someone hits the video_stream endpoint
+    print(f'endpoint hit: {data}')
+
+    # You can add your notification logic or trigger specific tasks here
 
 @app.route('/')
 def index():
-    return "Live Video Feed API is running!"
-
-@app.route('/video_feed', methods=['POST'])
-def video_feed():
-    frame_data = request.files['frame'].read()  # Read the frame data from the request payload
-    frame_data = np.frombuffer(frame_data, np.uint8)  # Convert the frame data to a NumPy array
-
-    frame = cv2.imdecode(frame_data, cv2.IMREAD_COLOR)  # Decode the frame
-
-    processed_frame = process_frame(frame)  # Process the frame
-
-    ret, buffer = cv2.imencode('.jpg', processed_frame)  # Encode the processed frame as JPEG
-
-    frame_bytes = buffer.tobytes()  # Convert the frame to bytes
-
-    return Response(
-        b'--frame\r\n'
-        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n',
-        mimetype='multipart/x-mixed-replace; boundary=frame'
-    )
-
+    return "TASYA-API is running!"
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', debug=True)
+    socketio.run(app, host='0.0.0.0', port=5000, debug=True)
