@@ -1,73 +1,193 @@
-# Backend Description
+# TASYA-API Documentation
 
-The backend of this project is responsible for capturing video frames from a
-webcam, processing them using a hand gesture recognition model, and streaming
-the processed frames to the frontend for display. It is implemented using
-Python, Flask, OpenCV, TensorFlow, and Mediapipe.
+TASYA-API is a Flask-based backend that provides real-time video processing and
+gesture recognition using TensorFlow Lite and MediaPipe. It receives video
+frames from a client application, performs hand gesture recognition, and sends
+back the processed frames with gesture labels.
 
-## Functionality
+## Installation
 
-Video Capture: The backend utilizes OpenCV to capture frames from the webcam in
-real-time. It continuously reads frames from the webcam using the
-cv2.VideoCapture module.
+To use TASYA-API, you need to set up the required dependencies and run the
+backend server.
 
-- Hand Gesture Recognition: Mediapipe's Hands library is used for hand detection
-  and landmark estimation. It processes each frame to detect and extract hand
-  landmarks, which are then used for hand gesture recognition. The backend uses
-  a pre-trained TensorFlow Lite model (tasya.tflite) for predicting the hand
-  gestures based on the extracted landmarks.
+### Prerequisites
 
-- Bounding Box and Labeling: The backend draws a bounding box around the
-  detected hand region in each frame using OpenCV's drawing functions. It also
-  displays the predicted hand gesture label inside the bounding box.
+- Python 3.6 or higher
+- TensorFlow 2.0 or higher
+- Flask
+- Flask-SocketIO
+- OpenCV (cv2)
+- NumPy
+- MediaPipe
 
-- Video Streaming: The processed frames are converted to JPEG format using
-  OpenCV's cv2.imencode function. These encoded frames are then streamed to the
-  frontend using Flask's Response object with the multipart/x-mixed-replace MIME
-  type. This allows the frontend to continuously receive and display the frames
-  in real-time.
+You can install the required packages using pip:
 
-## Optimization
+```pip
+pip install tensorflow flask flask-socketio opencv-python numpy mediapipe
+```
 
-To save network resources, several optimizations have been implemented:
+### Setting Up
 
-- Frame Resizing: The captured frames are resized to a smaller resolution (e.g.,
-  640x480) before streaming. This reduces the size of each frame and the amount
-  of data transmitted.
+1. Copy the provided code into a file named app.py.
+2. Download the TensorFlow Lite model (tasya.tflite) and place it in the same
+   directory as app.py.
+3. Run the backend server using the following command:
 
-- Frame Rate Control: A delay is introduced between frame captures to control
-  the frame rate. The cv2.waitKey function is used to pause the program
-  execution for a specific duration, thus controlling the frame rate.
+```terminal
+python app.py
+```
 
-- Error Handling: Exception handling is implemented to catch any errors that may
-  occur during hand gesture recognition. If an error occurs, such as an empty
-  frame or a frame without a hand detected, it is logged and the processing
-  continues with the next frame.
+By default, the server will listen on `http://localhost:5000`.
 
-## Dependencies
+## API Endpoints
 
-The backend relies on the following dependencies, which can be installed via
-pip:
+/
 
-- Flask: A web framework used for creating the server and handling HTTP
-  requests.
-- OpenCV: A computer vision library used for video capture, image processing,
-  and drawing functions.
-- TensorFlow: A machine learning framework used for loading and running the hand
-  gesture recognition model.
-- Mediapipe: A library for building multimodal machine learning pipelines,
-  utilized here for hand detection and landmark estimation.
+- Method: GET
+- Description: Returns a simple message to verify that the API is running.
+- Example: `http://localhost:5000/`
 
-## Usage
+### WebSocket Events
 
-To run the backend, ensure that you have the required dependencies installed.
-Then, execute the Python script, and the server will start running. The video
-stream will be accessible at the specified URL endpoint (/video_feed in this
-case).
+connect
 
-Make sure to update the tasya.tflite model file path if necessary. Additionally,
-you can adjust the frame resolution, frame rate, and other parameters as needed.
+- Event: 'connect'
+- Description: Triggered when a client connects to the server using WebSocket.
+- Example:
 
-That's a general overview of the backend implementation for this project. Feel
-free to customize and extend it based on your specific requirements and use
-case.
+```js
+socket.on("connect", function () {
+  console.log("Connected to the server");
+});
+```
+
+disconnect
+
+- Event: 'disconnect'
+- Description: Triggered when a client disconnects from the server using
+  WebSocket.
+- Example:
+
+```js
+socket.on("disconnect", function () {
+  console.log("Disconnected from the server");
+});
+```
+
+video_stream
+
+- Event: 'video_stream'
+- Description: Receives video frames from the client application for processing.
+- Data:
+  - frame: Base64-encoded string of the video frame.
+  - width: Width of the video frame.
+  - height: Height of the video frame.
+- Example:
+
+```js
+// Send video frame data to the server
+socket.emit("video_stream", {
+  frame: "base64-encoded-frame-data",
+  width: 640,
+  height: 480,
+});
+```
+
+## WebSocket Responses
+
+processed_frame
+
+- Event: 'processed_frame'
+- Description: Sends back the processed video frame with gesture labels.
+- Data:
+  - frame: Base64-encoded string of the processed video frame.
+- Example:
+
+```js
+// Receive processed video frame data from the server
+socket.on("processed_frame", function (data) {
+  var frameData = data.frame;
+  // Process the frame data as needed
+});
+```
+
+## Processing Video Frames
+
+The process_frame function is responsible for processing each video frame
+received from the client. It performs the following steps:
+
+1. Resize the frame to the desired dimensions (frame_width and frame_height).
+2. Perform hand detection and landmark estimation using MediaPipe.
+3. Extract the bounding box coordinates around the detected hand.
+4. Crop the frame using the bounding box coordinates.
+5. Preprocess the cropped region for gesture recognition.
+6. Pass the preprocessed data through the TensorFlow Lite model.
+7. Retrieve the predicted gesture label.
+8. Draw the bounding box and gesture label on the frame.
+9. Return the processed frame.
+10. Feel free to modify the process_frame function to adapt it to your specific
+    requirements.
+
+## Usage Example
+
+Here's an example of how you can use TASYA-API in a client application:
+
+```python
+import cv2
+import base64
+import requests
+import json
+
+# Read a video file or capture frames from a camera
+cap = cv2.VideoCapture(0)
+
+# Define the server URL
+server_url = 'http://localhost:5000/video_stream'
+
+while cap.isOpened():
+    # Read a frame from the video
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    # Encode the frame as base64
+    _, frame_data = cv2.imencode('.jpg', frame)
+    frame_base64 = base64.b64encode(frame_data).decode('utf-8')
+
+    # Prepare the payload
+    payload = {
+        'frame': frame_base64,
+        'width': frame.shape[1],
+        'height': frame.shape[0]
+    }
+
+    # Send the video frame to the server
+    response = requests.post(server_url, json=payload)
+    if response.status_code == 200:
+        # Receive the processed frame from the server
+        data = response.json()
+        processed_frame_base64 = data['frame']
+
+        # Decode the processed frame
+        processed_frame_data = base64.b64decode(processed_frame_base64)
+        processed_frame = cv2.imdecode(np.frombuffer(processed_frame_data, np.uint8), cv2.IMREAD_COLOR)
+
+        # Display the processed frame
+        cv2.imshow('Processed Frame', processed_frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Release the video capture and close windows
+cap.release()
+cv2.destroyAllWindows()
+```
+
+This example demonstrates how to send video frames to the TASYA-API server and
+display the processed frames received from the server.
+
+## Conclusion
+
+This concludes the documentation for TASYA-API. You can integrate it into your
+applications to perform real-time gesture recognition using video streams. Feel
+free to customize and extend the code to suit your specific needs.
